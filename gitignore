@@ -1,0 +1,5 @@
+node_modules/
+zocker.db
+*.log
+.env
+.DS_Store
