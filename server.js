@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS participants (
   phone TEXT,
   sex TEXT,
   job TEXT,
+  zaloUserId TEXT,
   lastSpinAt INTEGER DEFAULT NULL,
   lastPrizeId TEXT DEFAULT NULL,
   createdAt INTEGER NOT NULL
@@ -58,6 +59,12 @@ try {
   // ignore if column exists
 }
 
+try {
+  db.prepare(`ALTER TABLE participants ADD COLUMN zaloUserId TEXT`).run();
+  console.log("✅ Added zaloUserId column to participants table");
+} catch (e) {
+  // ignore if column exists
+}
 
 // ================= PRIZE CONFIG =================
 const PRIZE_SLOTS = [
@@ -101,6 +108,17 @@ const FORCE_RESEED = false;
 const now = () => Date.now();
 const makeCode = () => "GIFT-" + nanoid(8).toUpperCase();
 
+// Mapping interest code sang tên tiếng Việt
+function getInterestName(job) {
+  const map = {
+    'pickleball': 'Pickleball',
+    'football': 'Bóng đá',
+    'running': 'Chạy bộ',
+    'all': 'Tất cả',
+  };
+  return map[job] || job || 'Chưa cung cấp';
+}
+
 function weightedRandom(rows) {
   const list = rows.filter(r => r.enabled && (r.remaining === null || r.remaining > 0));
   const sum = list.reduce((s, r) => s + r.weight, 0);
@@ -126,25 +144,60 @@ app.get("/", (req, res) => {
 
 // ================= MINI GAME APIs =================
 app.post("/register", (req, res) => {
-  const { name, phone, sex, job } = req.body || {};
-  if (!name || !phone) return res.json({ ok: false });
+  const { name, phone, sex, job, zaloUserId } = req.body || {};
+  
+  // Validate basic fields
+  if (!name || !phone) {
+    return res.json({ ok: false, message: "Thiếu thông tin tên hoặc số điện thoại" });
+  }
 
-  const old = db.prepare("SELECT * FROM participants WHERE phone=?").get(phone);
-  if (old) return res.json({ ok: true, participantId: old.id });
+  // ✅ CHECK 1: Kiểm tra SĐT đã đăng ký chưa
+  const existingPhone = db.prepare("SELECT * FROM participants WHERE phone=?").get(phone);
+  if (existingPhone) {
+    console.log(`⚠️  Phone ${phone} đã đăng ký trước đó`);
+    return res.json({ 
+      ok: true, 
+      participantId: existingPhone.id,
+      message: "Số điện thoại đã được đăng ký"
+    });
+  }
 
+  // ✅ CHECK 2: Kiểm tra Zalo User ID (CHỐNG GIAN LẬN)
+  if (zaloUserId) {
+    const existingZalo = db.prepare("SELECT * FROM participants WHERE zaloUserId=?").get(zaloUserId);
+    if (existingZalo) {
+      console.log(`🚨 FRAUD DETECTED: Zalo ID ${zaloUserId} đã đăng ký với SĐT ${existingZalo.phone}`);
+      return res.json({ 
+        ok: false, 
+        message: "Tài khoản Zalo của bạn đã tham gia chương trình rồi. Mỗi người chỉ được chơi 1 lần." 
+      });
+    }
+  } else {
+    // Nếu không có Zalo User ID, log cảnh báo (nhưng vẫn cho đăng ký)
+    console.log(`⚠️  User đăng ký không có Zalo User ID (có thể dùng web browser)`);
+  }
+
+  // ✅ Đăng ký mới
   const id = nanoid(12);
-  db.prepare(`
-    INSERT INTO participants(id,name,phone,sex,job,createdAt)
-    VALUES(?,?,?,?,?,?)
-  `).run(id, name, phone, sex || "other", job || "other", now());
+  try {
+    db.prepare(`
+      INSERT INTO participants(id, name, phone, sex, job, zaloUserId, createdAt)
+      VALUES(?, ?, ?, ?, ?, ?, ?)
+    `).run(id, name, phone, sex || "other", job || "other", zaloUserId || null, now());
 
-  res.json({ ok: true, participantId: id });
+    console.log(`✅ Đăng ký thành công: ${name} - ${phone} - Zalo: ${zaloUserId || 'N/A'}`);
+
+    res.json({ ok: true, participantId: id });
+  } catch (error) {
+    console.error("❌ Lỗi đăng ký:", error);
+    res.json({ ok: false, message: "Lỗi hệ thống, vui lòng thử lại" });
+  }
 });
 
 app.post("/spin", (req, res) => {
   const { participantId } = req.body || {};
   const p = db.prepare("SELECT * FROM participants WHERE id=?").get(participantId);
-  if (!p) return res.json({ ok: false });
+  if (!p) return res.json({ ok: false, message: "Không tìm thấy thông tin người chơi" });
 
   if (p.lastSpinAt && now() - p.lastSpinAt < 86400000)
     return res.json({ ok: false, message: "Đã quay hôm nay" });
@@ -171,6 +224,7 @@ app.post("/spin", (req, res) => {
 
   try {
     const prize = tx();
+    console.log(`🎰 ${p.name} (${p.phone}) quay trúng: ${prize.title}`);
     res.json({
       ok: true,
       prizeKey: prize.prizeKey,
@@ -179,17 +233,17 @@ app.post("/spin", (req, res) => {
       isWin: prize.prizeKey !== "LOSE"
     });
   } catch {
-    res.json({ ok: false });
+    res.json({ ok: false, message: "Lỗi khi quay, vui lòng thử lại" });
   }
 });
 
 app.post("/claim", (req, res) => {
   const { participantId } = req.body || {};
   const p = db.prepare("SELECT * FROM participants WHERE id=?").get(participantId);
-  if (!p || !p.lastPrizeId) return res.json({ ok: false });
+  if (!p || !p.lastPrizeId) return res.json({ ok: false, message: "Không có giải thưởng để nhận" });
 
   const prize = db.prepare("SELECT * FROM prize_pool WHERE id=?").get(p.lastPrizeId);
-  if (prize.prizeKey === "LOSE") return res.json({ ok: false });
+  if (prize.prizeKey === "LOSE") return res.json({ ok: false, message: "Bạn chưa trúng giải" });
 
   const old = db.prepare(`
     SELECT * FROM claims
@@ -203,6 +257,8 @@ app.post("/claim", (req, res) => {
     VALUES(?,?,?,?,?,?)
   `).run(code, participantId, prize.id, prize.prizeKey, prize.title, now());
 
+  console.log(`🎁 ${p.name} nhận mã quà: ${code} - ${prize.title}`);
+
   res.json({ ok: true, code });
 });
 
@@ -213,59 +269,363 @@ app.get("/admin", (req, res) => {
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>Zocker Admin</title>
+<title>Zocker Admin Panel</title>
 <style>
-body{font-family:system-ui;background:#f6f7fb;padding:30px}
-.card{background:#fff;padding:20px;border-radius:12px;max-width:900px;margin:auto;box-shadow:0 10px 30px rgba(0,0,0,.1)}
-input,button{padding:10px;margin:5px 0;width:100%;font-size:15px}
-button{background:#4f46e5;color:#fff;border:none;border-radius:6px;cursor:pointer}
-button.alt{background:#059669}
-pre{background:#111;color:#0f0;padding:15px;border-radius:8px;max-height:400px;overflow:auto}
-.row{display:flex;gap:10px}
-.row button{flex:1}
+body{font-family:system-ui;background:#f6f7fb;padding:20px;margin:0}
+.container{max-width:1200px;margin:0 auto}
+.card{background:#fff;padding:25px;border-radius:12px;margin-bottom:20px;box-shadow:0 4px 20px rgba(0,0,0,.08)}
+h2{color:#1f2937;margin:0 0 20px 0;display:flex;align-items:center;gap:10px}
+input,button,select{padding:12px 16px;margin:5px 0;font-size:15px;border-radius:8px;border:1px solid #d1d5db}
+input{width:100%;box-sizing:border-box}
+button{background:#4f46e5;color:#fff;border:none;cursor:pointer;font-weight:500;transition:all .2s}
+button:hover{background:#4338ca;transform:translateY(-1px)}
+button.secondary{background:#059669}
+button.secondary:hover{background:#047857}
+button.danger{background:#dc2626}
+button.danger:hover{background:#b91c1c}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:15px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px;margin-bottom:20px}
+.stat-card{background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);padding:20px;border-radius:10px;color:#fff}
+.stat-card.green{background:linear-gradient(135deg,#f093fb 0%,#f5576c 100%)}
+.stat-card.blue{background:linear-gradient(135deg,#4facfe 0%,#00f2fe 100%)}
+.stat-card.orange{background:linear-gradient(135deg,#fa709a 0%,#fee140 100%)}
+.stat-value{font-size:32px;font-weight:bold;margin:5px 0}
+.stat-label{font-size:14px;opacity:.9}
+table{width:100%;border-collapse:collapse;margin-top:15px}
+th,td{padding:12px;text-align:left;border-bottom:1px solid #e5e7eb}
+th{background:#f9fafb;font-weight:600;color:#374151;position:sticky;top:0}
+tr:hover{background:#f9fafb}
+.badge{display:inline-block;padding:4px 12px;border-radius:12px;font-size:12px;font-weight:500}
+.badge.success{background:#d1fae5;color:#065f46}
+.badge.warning{background:#fef3c7;color:#92400e}
+.badge.info{background:#dbeafe;color:#1e40af}
+.badge.danger{background:#fee2e2;color:#991b1b}
+.filter-bar{display:flex;gap:10px;margin-bottom:15px;flex-wrap:wrap}
+.filter-bar select,.filter-bar input{flex:1;min-width:200px}
+#playerTable{max-height:500px;overflow-y:auto}
+.tab-buttons{display:flex;gap:10px;margin-bottom:20px;border-bottom:2px solid #e5e7eb}
+.tab-button{padding:12px 24px;background:none;border:none;border-bottom:3px solid transparent;cursor:pointer;font-weight:500;color:#6b7280;transition:all .2s}
+.tab-button.active{color:#4f46e5;border-bottom-color:#4f46e5}
+.tab-content{display:none}
+.tab-content.active{display:block}
+.search-box{position:relative}
+.search-box input{padding-left:40px}
+.search-icon{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#9ca3af}
+.fraud-badge{background:#fef2f2;color:#991b1b;border:1px solid #fca5a5}
 </style>
 </head>
 <body>
-<div class="card">
-<h2>🎁 Zocker Admin Panel</h2>
+<div class="container">
+  <div class="card">
+    <h2>🎁 Zocker Admin Panel</h2>
+    <div class="row">
+      <input id="key" type="password" placeholder="🔑 Admin key"/>
+    </div>
+  </div>
 
-<input id="key" placeholder="Admin key"/>
-<input id="code" placeholder="GIFT-XXXX"/>
+  <div class="tab-buttons">
+    <button class="tab-button active" onclick="switchTab('dashboard')">📊 Tổng quan</button>
+    <button class="tab-button" onclick="switchTab('players')">👥 Khách hàng</button>
+    <button class="tab-button" onclick="switchTab('fraud')">🚨 Phát hiện gian lận</button>
+    <button class="tab-button" onclick="switchTab('prizes')">🎁 Quà tặng</button>
+  </div>
 
-<div class="row">
-<button onclick="check()">🔍 Check mã</button>
-<button onclick="redeem()">✅ Redeem</button>
-</div>
+  <!-- TAB: DASHBOARD -->
+  <div id="tab-dashboard" class="tab-content active">
+    <div class="stats" id="statsContainer">
+      <div class="stat-card">
+        <div class="stat-label">Tổng người chơi</div>
+        <div class="stat-value" id="totalPlayers">0</div>
+      </div>
+      <div class="stat-card green">
+        <div class="stat-label">Đã nhận quà</div>
+        <div class="stat-value" id="claimedPrizes">0</div>
+      </div>
+      <div class="stat-card blue">
+        <div class="stat-label">Chưa nhận quà</div>
+        <div class="stat-value" id="unclaimedPrizes">0</div>
+      </div>
+      <div class="stat-card orange">
+        <div class="stat-label">Chưa có quà</div>
+        <div class="stat-value" id="noPrizes">0</div>
+      </div>
+    </div>
+  </div>
 
-<div class="row">
-<button class="alt" onclick="players()">👥 Danh sách người chơi</button>
-<button class="alt" onclick="exportCSV()">⬇ Xuất CSV</button>
-</div>
+  <!-- TAB: PLAYERS -->
+  <div id="tab-players" class="tab-content">
+    <div class="card">
+      <h2>👥 Danh sách khách hàng</h2>
+      
+      <div class="filter-bar">
+        <div class="search-box" style="flex:2">
+          <span class="search-icon">🔍</span>
+          <input id="searchInput" type="text" placeholder="Tìm theo tên, SĐT, mã quà..." onkeyup="filterTable()"/>
+        </div>
+        <select id="statusFilter" onchange="filterTable()">
+          <option value="">Tất cả trạng thái</option>
+          <option value="claimed">Đã nhận quà</option>
+          <option value="unclaimed">Chưa nhận quà</option>
+          <option value="noprize">Chưa có quà</option>
+        </select>
+        <select id="interestFilter" onchange="filterTable()">
+          <option value="">Tất cả sản phẩm</option>
+          <option value="pickleball">Pickleball</option>
+          <option value="football">Bóng đá</option>
+          <option value="running">Chạy bộ</option>
+          <option value="all">Tất cả</option>
+        </select>
+      </div>
 
-<pre id="out"></pre>
+      <div class="row">
+        <button class="secondary" onclick="loadPlayers()">🔄 Tải lại</button>
+        <button class="secondary" onclick="exportCSV()">⬇️ Xuất CSV</button>
+        <button class="secondary" onclick="exportFilteredCSV()">⬇️ Xuất CSV (Đã lọc)</button>
+      </div>
+
+      <div id="playerTable"></div>
+    </div>
+  </div>
+
+  <!-- TAB: FRAUD DETECTION -->
+  <div id="tab-fraud" class="tab-content">
+    <div class="card">
+      <h2>🚨 Phát hiện gian lận</h2>
+      <p style="color:#6b7280;margin-bottom:20px">Hệ thống đã chặn các tài khoản cố gắng đăng ký nhiều lần với cùng Zalo ID</p>
+      <div id="fraudTable"></div>
+    </div>
+  </div>
+
+  <!-- TAB: PRIZES -->
+  <div id="tab-prizes" class="tab-content">
+    <div class="card">
+      <h2>🎁 Kiểm tra & Redeem mã quà</h2>
+      <input id="code" placeholder="Nhập mã quà (VD: GIFT-XXXX)"/>
+      <div class="row">
+        <button onclick="checkCode()">🔍 Kiểm tra mã</button>
+        <button class="danger" onclick="redeemCode()">✅ Redeem (Đã trao quà)</button>
+      </div>
+      <pre id="codeResult" style="background:#f9fafb;padding:15px;border-radius:8px;max-height:300px;overflow:auto;display:none"></pre>
+    </div>
+  </div>
 </div>
 
 <script>
-const out=document.getElementById('out');
-async function check(){
-  const r=await fetch('/admin/api/check/'+code.value+'?key='+key.value);
-  out.textContent=JSON.stringify(await r.json(),null,2);
+let allPlayers = [];
+
+function switchTab(tabName) {
+  document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+  
+  event.target.classList.add('active');
+  document.getElementById('tab-' + tabName).classList.add('active');
+  
+  if (tabName === 'dashboard') loadDashboard();
+  if (tabName === 'players') loadPlayers();
+  if (tabName === 'fraud') loadFraudDetection();
 }
-async function redeem(){
-  const r=await fetch('/admin/api/redeem/'+code.value,{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({key:key.value})
+
+async function loadDashboard() {
+  const key = document.getElementById('key').value;
+  if (!key) return alert('Vui lòng nhập admin key');
+  
+  try {
+    const response = await fetch('/admin/api/stats?key=' + key);
+    const stats = await response.json();
+    
+    document.getElementById('totalPlayers').textContent = stats.total || 0;
+    document.getElementById('claimedPrizes').textContent = stats.claimed || 0;
+    document.getElementById('unclaimedPrizes').textContent = stats.unclaimed || 0;
+    document.getElementById('noPrizes').textContent = stats.noPrize || 0;
+  } catch (e) {
+    alert('Lỗi tải thống kê');
+  }
+}
+
+async function loadPlayers() {
+  const key = document.getElementById('key').value;
+  if (!key) return alert('Vui lòng nhập admin key');
+  
+  try {
+    const response = await fetch('/admin/api/players?key=' + key);
+    allPlayers = await response.json();
+    renderTable(allPlayers);
+  } catch (e) {
+    alert('Lỗi tải danh sách');
+  }
+}
+
+async function loadFraudDetection() {
+  const key = document.getElementById('key').value;
+  if (!key) return alert('Vui lòng nhập admin key');
+  
+  try {
+    const response = await fetch('/admin/api/fraud?key=' + key);
+    const fraudData = await response.json();
+    
+    if (fraudData.length === 0) {
+      document.getElementById('fraudTable').innerHTML = '<p style="color:#059669">✅ Không phát hiện gian lận</p>';
+      return;
+    }
+    
+    const html = \`
+      <table>
+        <thead>
+          <tr>
+            <th>Zalo User ID</th>
+            <th>Số lần thử đăng ký</th>
+            <th>SĐT đã thử</th>
+            <th>Thời gian gần nhất</th>
+          </tr>
+        </thead>
+        <tbody>
+          \${fraudData.map(f => \`
+            <tr>
+              <td><code>\${f.zaloUserId}</code></td>
+              <td><span class="badge danger">\${f.attempts} lần</span></td>
+              <td>\${f.phones.join(', ')}</td>
+              <td>\${new Date(f.lastAttempt).toLocaleString('vi-VN')}</td>
+            </tr>
+          \`).join('')}
+        </tbody>
+      </table>
+    \`;
+    document.getElementById('fraudTable').innerHTML = html;
+  } catch (e) {
+    alert('Lỗi tải dữ liệu gian lận');
+  }
+}
+
+function renderTable(data) {
+  const html = \`
+    <table>
+      <thead>
+        <tr>
+          <th>Tên</th>
+          <th>SĐT</th>
+          <th>Sản phẩm quan tâm</th>
+          <th>Thời gian đăng ký</th>
+          <th>Mã quà</th>
+          <th>Tên quà</th>
+          <th>Trạng thái</th>
+        </tr>
+      </thead>
+      <tbody>
+        \${data.map(r => \`
+          <tr>
+            <td>\${r.name || ''}</td>
+            <td>\${r.phone || ''}</td>
+            <td><span class="badge info">\${r.interest || 'N/A'}</span></td>
+            <td>\${new Date(r.createdAt).toLocaleString('vi-VN')}</td>
+            <td><strong>\${r.code || '-'}</strong></td>
+            <td>\${r.prizeTitle || '-'}</td>
+            <td>\${getStatusBadge(r)}</td>
+          </tr>
+        \`).join('')}
+      </tbody>
+    </table>
+  \`;
+  document.getElementById('playerTable').innerHTML = html;
+}
+
+function getStatusBadge(row) {
+  if (!row.code) return '<span class="badge">Chưa có quà</span>';
+  if (row.redeemedAt) return '<span class="badge success">Đã nhận quà</span>';
+  return '<span class="badge warning">Chưa nhận quà</span>';
+}
+
+function filterTable() {
+  const search = document.getElementById('searchInput').value.toLowerCase();
+  const status = document.getElementById('statusFilter').value;
+  const interest = document.getElementById('interestFilter').value;
+  
+  let filtered = allPlayers.filter(row => {
+    const matchSearch = !search || 
+      (row.name && row.name.toLowerCase().includes(search)) ||
+      (row.phone && row.phone.includes(search)) ||
+      (row.code && row.code.toLowerCase().includes(search));
+    
+    const matchStatus = !status ||
+      (status === 'claimed' && row.redeemedAt) ||
+      (status === 'unclaimed' && row.code && !row.redeemedAt) ||
+      (status === 'noprize' && !row.code);
+    
+    const matchInterest = !interest || 
+      (row.job && row.job.toLowerCase() === interest.toLowerCase());
+    
+    return matchSearch && matchStatus && matchInterest;
   });
-  out.textContent=JSON.stringify(await r.json(),null,2);
+  
+  renderTable(filtered);
 }
-async function players(){
-  const r=await fetch('/admin/api/players?key='+key.value);
-  out.textContent=JSON.stringify(await r.json(),null,2);
+
+async function checkCode() {
+  const key = document.getElementById('key').value;
+  const code = document.getElementById('code').value.trim();
+  if (!key || !code) return alert('Vui lòng nhập admin key và mã quà');
+  
+  try {
+    const response = await fetch('/admin/api/check/' + code + '?key=' + key);
+    const result = await response.json();
+    document.getElementById('codeResult').style.display = 'block';
+    document.getElementById('codeResult').textContent = JSON.stringify(result, null, 2);
+  } catch (e) {
+    alert('Lỗi kiểm tra mã');
+  }
 }
-function exportCSV(){
-  window.open('/admin/api/export?key='+key.value);
+
+async function redeemCode() {
+  const key = document.getElementById('key').value;
+  const code = document.getElementById('code').value.trim();
+  if (!key || !code) return alert('Vui lòng nhập admin key và mã quà');
+  if (!confirm('Xác nhận đã trao quà cho khách hàng?')) return;
+  
+  try {
+    const response = await fetch('/admin/api/redeem/' + code, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key})
+    });
+    const result = await response.json();
+    document.getElementById('codeResult').style.display = 'block';
+    document.getElementById('codeResult').textContent = JSON.stringify(result, null, 2);
+    if (result.ok) {
+      alert('✅ Redeem thành công!');
+      loadPlayers();
+    }
+  } catch (e) {
+    alert('Lỗi redeem');
+  }
 }
+
+function exportCSV() {
+  const key = document.getElementById('key').value;
+  if (!key) return alert('Vui lòng nhập admin key');
+  window.open('/admin/api/export?key=' + key);
+}
+
+function exportFilteredCSV() {
+  const search = document.getElementById('searchInput').value.toLowerCase();
+  const status = document.getElementById('statusFilter').value;
+  const interest = document.getElementById('interestFilter').value;
+  
+  const key = document.getElementById('key').value;
+  if (!key) return alert('Vui lòng nhập admin key');
+  
+  const params = new URLSearchParams({
+    key,
+    search: search || '',
+    status: status || '',
+    interest: interest || ''
+  });
+  
+  window.open('/admin/api/export?' + params.toString());
+}
+
+window.onload = () => {
+  const key = document.getElementById('key').value;
+  if (key) loadDashboard();
+};
 </script>
 </body>
 </html>
@@ -273,58 +633,213 @@ function exportCSV(){
 });
 
 // ================= ADMIN APIs =================
-app.get("/admin/api/check/:code", adminAuth, (req, res) => {
-  const row = db.prepare(`
-    SELECT c.*, p.name, p.phone
-    FROM claims c JOIN participants p ON p.id=c.participantId
-    WHERE c.code=?
-  `).get(req.params.code.toUpperCase());
 
-  if (!row) return res.json({ ok: false });
-  res.json({ ok: true, claim: row });
+// Thống kê tổng quan
+app.get("/admin/api/stats", adminAuth, (req, res) => {
+  const total = db.prepare("SELECT COUNT(*) as count FROM participants").get().count;
+  
+  const claimed = db.prepare(`
+    SELECT COUNT(DISTINCT c.participantId) as count 
+    FROM claims c 
+    WHERE c.redeemedAt IS NOT NULL
+  `).get().count;
+  
+  const unclaimed = db.prepare(`
+    SELECT COUNT(DISTINCT c.participantId) as count 
+    FROM claims c 
+    WHERE c.redeemedAt IS NULL
+  `).get().count;
+  
+  const noPrize = total - claimed - unclaimed;
+  
+  res.json({
+    total,
+    claimed,
+    unclaimed,
+    noPrize
+  });
 });
 
-app.post("/admin/api/redeem/:code", adminAuth, (req, res) => {
-  const r = db.prepare(`
-    UPDATE claims SET redeemedAt=?, redeemedBy='ADMIN'
-    WHERE code=? AND redeemedAt IS NULL
-  `).run(now(), req.params.code.toUpperCase());
-
-  res.json({ ok: r.changes === 1 });
-});
-
+// Danh sách người chơi
 app.get("/admin/api/players", adminAuth, (req, res) => {
   const rows = db.prepare(`
-    SELECT p.name,p.phone,p.createdAt,
-           c.code,c.redeemedAt
+    SELECT 
+      p.id,
+      p.name,
+      p.phone,
+      p.sex,
+      p.job,
+      p.zaloUserId,
+      p.createdAt,
+      p.lastSpinAt,
+      c.code,
+      c.title as prizeTitle,
+      c.prizeKey,
+      c.createdAt as claimCreatedAt,
+      c.redeemedAt,
+      c.redeemedBy
     FROM participants p
-    LEFT JOIN claims c ON p.id=c.participantId
+    LEFT JOIN claims c ON p.id = c.participantId
     ORDER BY p.createdAt DESC
   `).all();
-  res.json(rows);
+  
+  const result = rows.map(r => ({
+    id: r.id,
+    name: r.name,
+    phone: r.phone,
+    sex: r.sex,
+    job: r.job,
+    interest: getInterestName(r.job),
+    zaloUserId: r.zaloUserId,
+    createdAt: r.createdAt,
+    lastSpinAt: r.lastSpinAt,
+    code: r.code,
+    prizeTitle: r.prizeTitle,
+    prizeKey: r.prizeKey,
+    claimCreatedAt: r.claimCreatedAt,
+    redeemedAt: r.redeemedAt,
+    redeemedBy: r.redeemedBy,
+    status: !r.code ? 'noprize' : (r.redeemedAt ? 'claimed' : 'unclaimed')
+  }));
+  
+  res.json(result);
 });
 
-app.get("/admin/api/export", adminAuth, (req, res) => {
-  const rows = db.prepare(`
-    SELECT p.name,p.phone,p.createdAt,
-           c.code,c.redeemedAt
-    FROM participants p
-    LEFT JOIN claims c ON p.id=c.participantId
+// ✅ MỚI: API phát hiện gian lận
+app.get("/admin/api/fraud", adminAuth, (req, res) => {
+  // Tìm các Zalo ID có nhiều hơn 1 tài khoản
+  const frauds = db.prepare(`
+    SELECT 
+      zaloUserId,
+      COUNT(*) as attempts,
+      GROUP_CONCAT(phone) as phones,
+      MAX(createdAt) as lastAttempt
+    FROM participants
+    WHERE zaloUserId IS NOT NULL AND zaloUserId != ''
+    GROUP BY zaloUserId
+    HAVING attempts > 1
+    ORDER BY attempts DESC, lastAttempt DESC
   `).all();
+  
+  const result = frauds.map(f => ({
+    zaloUserId: f.zaloUserId,
+    attempts: f.attempts,
+    phones: f.phones.split(','),
+    lastAttempt: f.lastAttempt
+  }));
+  
+  res.json(result);
+});
 
-   let csv = "Tên,SĐT,Thời gian chơi,Mã quà,Trạng thái\n";
+// Check mã quà
+app.get("/admin/api/check/:code", adminAuth, (req, res) => {
+  const row = db.prepare(`
+    SELECT 
+      c.*,
+      p.name,
+      p.phone,
+      p.sex,
+      p.job,
+      p.zaloUserId
+    FROM claims c 
+    JOIN participants p ON p.id = c.participantId
+    WHERE c.code = ?
+  `).get(req.params.code.toUpperCase());
 
+  if (!row) return res.json({ ok: false, message: "Mã không tồn tại" });
+  
+  res.json({ 
+    ok: true, 
+    claim: {
+      ...row,
+      interest: getInterestName(row.job),
+      status: row.redeemedAt ? 'Đã nhận quà' : 'Chưa nhận quà'
+    }
+  });
+});
+
+// Redeem mã quà
+app.post("/admin/api/redeem/:code", adminAuth, (req, res) => {
+  const code = req.params.code.toUpperCase();
+  
+  const claim = db.prepare("SELECT * FROM claims WHERE code = ?").get(code);
+  if (!claim) return res.json({ ok: false, message: "Mã không tồn tại" });
+  if (claim.redeemedAt) return res.json({ ok: false, message: "Mã đã được redeem trước đó" });
+  
+  const result = db.prepare(`
+    UPDATE claims 
+    SET redeemedAt = ?, redeemedBy = 'ADMIN'
+    WHERE code = ? AND redeemedAt IS NULL
+  `).run(now(), code);
+
+  res.json({ 
+    ok: result.changes === 1,
+    message: result.changes === 1 ? "Redeem thành công!" : "Redeem thất bại"
+  });
+});
+
+// Export CSV
+app.get("/admin/api/export", adminAuth, (req, res) => {
+  const { search, status, interest } = req.query;
+  
+  let rows = db.prepare(`
+    SELECT 
+      p.name,
+      p.phone,
+      p.sex,
+      p.job,
+      p.zaloUserId,
+      p.createdAt,
+      c.code,
+      c.title as prizeTitle,
+      c.redeemedAt
+    FROM participants p
+    LEFT JOIN claims c ON p.id = c.participantId
+    ORDER BY p.createdAt DESC
+  `).all();
+  
+  if (search) {
+    const s = search.toLowerCase();
+    rows = rows.filter(r => 
+      (r.name && r.name.toLowerCase().includes(s)) ||
+      (r.phone && r.phone.includes(s)) ||
+      (r.code && r.code.toLowerCase().includes(s))
+    );
+  }
+  
+  if (status) {
+    rows = rows.filter(r => {
+      if (status === 'claimed') return r.redeemedAt;
+      if (status === 'unclaimed') return r.code && !r.redeemedAt;
+      if (status === 'noprize') return !r.code;
+      return true;
+    });
+  }
+  
+  if (interest) {
+    rows = rows.filter(r => r.job && r.job.toLowerCase() === interest.toLowerCase());
+  }
+  
+  let csv = "Tên,SĐT,Giới tính,Sản phẩm quan tâm,Zalo User ID,Thời gian đăng ký,Mã quà,Tên quà,Trạng thái\n";
+  
   for (const r of rows) {
-  csv += `"${r.name}","${r.phone}","${new Date(r.createdAt).toLocaleString()}","${r.code || ""}","${r.redeemedAt ? "ĐÃ NHẬN" : "CHƯA"}"\n`;
-   }
-
-
-  res.setHeader("Content-Type","text/csv");
-  res.setHeader("Content-Disposition","attachment; filename=zocker_players.csv");
-  res.send(csv);
+    const statusText = !r.code ? "Chưa có quà" : (r.redeemedAt ? "Đã nhận quà" : "Chưa nhận quà");
+    const interestName = getInterestName(r.job);
+    const sexMap = { male: 'Nam', female: 'Nữ', other: 'Khác' };
+    const sexText = sexMap[r.sex] || r.sex || '';
+    const zaloId = r.zaloUserId ? r.zaloUserId.substring(0, 20) : 'N/A';
+    
+    csv += `"${r.name || ''}","${r.phone || ''}","${sexText}","${interestName}","${zaloId}","${new Date(r.createdAt).toLocaleString('vi-VN')}","${r.code || ''}","${r.prizeTitle || ''}","${statusText}"\n`;
+  }
+  
+  const filename = `zocker_khachhang_${new Date().toISOString().split('T')[0]}.csv`;
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
+  res.send("\uFEFF" + csv);
 });
 
 // ================= RUN =================
 app.listen(PORT, () => {
   console.log("✅ Backend running http://localhost:" + PORT);
+  console.log("🛡️  Fraud prevention: Zalo User ID tracking enabled");
 });
