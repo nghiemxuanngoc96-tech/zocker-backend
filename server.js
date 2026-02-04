@@ -195,7 +195,7 @@ app.post("/register", (req, res) => {
       
       return res.json({ 
         ok: false, 
-        message: "Tài khoản Zalo của bạn đã tham gia chương trình rồi. Mỗi người chỉ được chơi 1 lần.",
+        message: "Tài khoản Zalo của bạn đã tham gia chương trình.",
         alreadyPlayed: true,
         nextSpinTime: nextSpinTime
       });
