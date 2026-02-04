@@ -68,14 +68,10 @@ try {
 
 // ================= PRIZE CONFIG =================
 const PRIZE_SLOTS = [
-  { spinIndex: 0, prizeKey: "FIRST", title: "Vợt Aspire (Giải nhất)", total: 1, weight: 0 },
-  { spinIndex: 1, prizeKey: "SECOND", title: "Giày Pickleball Aspire", total: 2, weight: 3 },
-  { spinIndex: 2, prizeKey: "THIRD", title: "Balo Pickleball", total: 5, weight: 8 },
-  { spinIndex: 3, prizeKey: "FOURTH", title: "Bóng Pickleball", total: 10, weight: 15 },
-  { spinIndex: 4, prizeKey: "VOUCHER_15", title: "Voucher 15%", total: 30, weight: 100 },
-  { spinIndex: 5, prizeKey: "VOUCHER_10", title: "Voucher 10%", total: 50, weight: 150 },
-  { spinIndex: 6, prizeKey: "LOSE", title: "Chúc may mắn lần sau", total: null, weight: 0 },
-  { spinIndex: 7, prizeKey: "LOSE", title: "Chúc may mắn lần sau", total: null, weight: 30 }
+  { spinIndex: 0, prizeKey: "HAT", title: "Mũ Zocker", total: 50, weight: 30 },
+  { spinIndex: 1, prizeKey: "ELBOW_GUARD", title: "Đai Bảo Vệ Khuỷu Tay Zocker", total: 50, weight: 30 },
+  { spinIndex: 2, prizeKey: "KNEE_GUARD", title: "Đai Bảo Vệ Đầu Gối Zocker", total: 50, weight: 30 },
+  { spinIndex: 3, prizeKey: "VOUCHER_10", title: "Voucher 10%", total: null, weight: 15 }
 ];
 
 // ================= SEED =================
@@ -199,8 +195,16 @@ app.post("/spin", (req, res) => {
   const p = db.prepare("SELECT * FROM participants WHERE id=?").get(participantId);
   if (!p) return res.json({ ok: false, message: "Không tìm thấy thông tin người chơi" });
 
-  if (p.lastSpinAt && now() - p.lastSpinAt < 86400000)
-    return res.json({ ok: false, message: "Đã quay hôm nay" });
+  // ✅ CHECK: Đã quay trong vòng 24 giờ chưa?
+  if (p.lastSpinAt && now() - p.lastSpinAt < 86400000) {
+    const nextSpinTime = new Date(p.lastSpinAt + 86400000);
+    const hours = Math.ceil((nextSpinTime.getTime() - now()) / 3600000);
+    return res.json({ 
+      ok: false, 
+      message: `Bạn đã quay hôm nay rồi! 🎰\n\nMỗi người chơi chỉ được quay 1 lần/ngày.\n\nHãy quay lại sau ${hours} giờ nữa để nhận cơ hội mới! 🎁`,
+      nextSpinTime: nextSpinTime.getTime()
+    });
+  }
 
   const tx = db.transaction(() => {
     const pool = db.prepare("SELECT * FROM prize_pool ORDER BY spinIndex").all();
