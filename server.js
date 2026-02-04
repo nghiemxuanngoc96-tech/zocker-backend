@@ -298,6 +298,50 @@ app.post("/claim", (req, res) => {
   res.json({ ok: true, code });
 });
 
+// ================= WEBHOOK ZALO =================
+// VERIFY TOKEN bí mật - bạn tự đặt, nhớ ghi lại để dán vào Zalo dashboard
+const VERIFY_TOKEN = 'zocker-webhook-secret-2026'; // Đổi thành chuỗi mạnh hơn nếu muốn
+
+app.get('/zalo-webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+    console.log('✅ Webhook verified by Zalo');
+    return res.status(200).send(challenge);
+  }
+
+  console.log('Webhook verification failed');
+  res.status(403).send('Verification failed');
+});
+
+app.post('/zalo-webhook', (req, res) => {
+  const event = req.body;
+  console.log('📥 Received Zalo event:', JSON.stringify(event, null, 2));
+
+  // Xử lý ví dụ: Khi user follow OA → tự động cấp lượt quay hoặc lưu Zalo ID
+  if (event.event === 'user.follow_oa') {
+    const userId = event.user_id;
+    console.log(`User ${userId} vừa follow OA`);
+
+    // Tìm user trong DB bằng Zalo ID (nếu đã đăng ký trước)
+    const participant = db.prepare("SELECT * FROM participants WHERE zaloUserId = ?").get(userId);
+
+    if (participant) {
+      // Đã đăng ký → có thể reset lượt quay nếu cần (ví dụ tặng thêm lượt)
+      // db.prepare("UPDATE participants SET lastSpinAt = NULL WHERE id = ?").run(participant.id);
+      console.log(`User ${participant.name} (${participant.phone}) follow OA - đã tham gia`);
+    } else {
+      // Chưa đăng ký → log để sau xử lý (có thể gửi tin nhắn OA mời quay)
+      console.log(`New follow from Zalo ID ${userId} - chưa đăng ký`);
+    }
+  }
+
+  // Luôn trả 200 OK nhanh để Zalo không retry
+  res.status(200).send('OK');
+});
+
 // ================= ADMIN UI =================
 app.get("/admin", (req, res) => {
   res.send(`
