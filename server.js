@@ -68,14 +68,11 @@ try {
 
 // ================= PRIZE CONFIG =================
 const PRIZE_SLOTS = [
-  { spinIndex: 0, prizeKey: "FIRST", title: "Vợt Aspire (Giải nhất)", total: 1, weight: 0 },
-  { spinIndex: 1, prizeKey: "SECOND", title: "Giày Pickleball Aspire", total: 2, weight: 3 },
-  { spinIndex: 2, prizeKey: "THIRD", title: "Balo Pickleball", total: 5, weight: 8 },
-  { spinIndex: 3, prizeKey: "FOURTH", title: "Bóng Pickleball", total: 10, weight: 15 },
-  { spinIndex: 4, prizeKey: "VOUCHER_15", title: "Voucher 15%", total: 30, weight: 100 },
-  { spinIndex: 5, prizeKey: "VOUCHER_10", title: "Voucher 10%", total: 50, weight: 150 },
-  { spinIndex: 6, prizeKey: "LOSE", title: "Chúc may mắn lần sau", total: null, weight: 0 },
-  { spinIndex: 7, prizeKey: "LOSE", title: "Chúc may mắn lần sau", total: null, weight: 30 }
+  { spinIndex: 0, prizeKey: "HAT", title: "Mũ Zocker", total: 50, weight: 30 },
+  { spinIndex: 1, prizeKey: "ELBOW_GUARD", title: "Đai Bảo Vệ Khuỷu Tay Zocker", total: 50, weight: 30 },
+  { spinIndex: 2, prizeKey: "KNEE_GUARD", title: "Đai Bảo Vệ Đầu Gối Zocker", total: 50, weight: 30 },
+  { spinIndex: 3, prizeKey: "VOUCHER_10", title: "Voucher 10%", total: null, weight: 15 }
+
 ];
 
 // ================= SEED =================
