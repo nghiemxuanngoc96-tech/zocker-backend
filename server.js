@@ -68,10 +68,14 @@ try {
 
 // ================= PRIZE CONFIG =================
 const PRIZE_SLOTS = [
-  { spinIndex: 0, prizeKey: "HAT", title: "Mũ Zocker", total: 50, weight: 30 },
-  { spinIndex: 1, prizeKey: "ELBOW_GUARD", title: "Đai Bảo Vệ Khuỷu Tay Zocker", total: 50, weight: 30 },
-  { spinIndex: 2, prizeKey: "KNEE_GUARD", title: "Đai Bảo Vệ Đầu Gối Zocker", total: 50, weight: 30 },
-  { spinIndex: 3, prizeKey: "VOUCHER_10", title: "Voucher 10%", total: null, weight: 15 }
+  { spinIndex: 0, prizeKey: "FIRST", title: "Vợt Aspire (Giải nhất)", total: 1, weight: 0 },
+  { spinIndex: 1, prizeKey: "SECOND", title: "Giày Pickleball Aspire", total: 2, weight: 3 },
+  { spinIndex: 2, prizeKey: "THIRD", title: "Balo Pickleball", total: 5, weight: 8 },
+  { spinIndex: 3, prizeKey: "FOURTH", title: "Bóng Pickleball", total: 10, weight: 15 },
+  { spinIndex: 4, prizeKey: "VOUCHER_15", title: "Voucher 15%", total: 30, weight: 100 },
+  { spinIndex: 5, prizeKey: "VOUCHER_10", title: "Voucher 10%", total: 50, weight: 150 },
+  { spinIndex: 6, prizeKey: "LOSE", title: "Chúc may mắn lần sau", total: null, weight: 0 },
+  { spinIndex: 7, prizeKey: "LOSE", title: "Chúc may mắn lần sau", total: null, weight: 30 }
 ];
 
 // ================= SEED =================
@@ -151,6 +155,25 @@ app.post("/register", (req, res) => {
   const existingPhone = db.prepare("SELECT * FROM participants WHERE phone=?").get(phone);
   if (existingPhone) {
     console.log(`⚠️  Phone ${phone} đã đăng ký trước đó`);
+    
+    // ✅ THÊM: Check xem user đã quay chưa
+    if (existingPhone.lastSpinAt) {
+      const timeSinceLastSpin = now() - existingPhone.lastSpinAt;
+      const timeRemaining = 86400000 - timeSinceLastSpin; // 24 giờ - thời gian đã qua
+      
+      if (timeRemaining > 0) {
+        // Vẫn còn trong thời gian chờ
+        const nextSpinTime = existingPhone.lastSpinAt + 86400000;
+        return res.json({ 
+          ok: false, 
+          participantId: existingPhone.id,
+          message: "Bạn đã quay hôm nay rồi!",
+          alreadyPlayed: true,
+          nextSpinTime: nextSpinTime
+        });
+      }
+    }
+    
     return res.json({ 
       ok: true, 
       participantId: existingPhone.id,
@@ -163,9 +186,21 @@ app.post("/register", (req, res) => {
     const existingZalo = db.prepare("SELECT * FROM participants WHERE zaloUserId=?").get(zaloUserId);
     if (existingZalo) {
       console.log(`🚨 FRAUD DETECTED: Zalo ID ${zaloUserId} đã đăng ký với SĐT ${existingZalo.phone}`);
+      
+      // ✅ THÊM: Tính thời gian còn lại
+      let nextSpinTime = null;
+      if (existingZalo.lastSpinAt) {
+        const timeSinceLastSpin = now() - existingZalo.lastSpinAt;
+        if (timeSinceLastSpin < 86400000) {
+          nextSpinTime = existingZalo.lastSpinAt + 86400000;
+        }
+      }
+      
       return res.json({ 
         ok: false, 
-        message: "Tài khoản Zalo của bạn đã tham gia chương trình rồi. Mỗi người chỉ được chơi 1 lần." 
+        message: "Tài khoản Zalo của bạn đã tham gia chương trình rồi. Mỗi người chỉ được chơi 1 lần.",
+        alreadyPlayed: true,
+        nextSpinTime: nextSpinTime
       });
     }
   } else {
