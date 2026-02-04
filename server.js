@@ -71,7 +71,7 @@ const PRIZE_SLOTS = [
   { spinIndex: 0, prizeKey: "HAT", title: "Mũ Zocker", total: 50, weight: 30 },
   { spinIndex: 1, prizeKey: "ELBOW_GUARD", title: "Đai Bảo Vệ Khuỷu Tay Zocker", total: 50, weight: 30 },
   { spinIndex: 2, prizeKey: "KNEE_GUARD", title: "Đai Bảo Vệ Đầu Gối Zocker", total: 50, weight: 30 },
-  { spinIndex: 3, prizeKey: "VOUCHER_10", title: "Voucher 10%", total: null, weight: 15 }
+  { spinIndex: 3, prizeKey: "VOUCHER_10", title: "Voucher 10%", total: null, weight: 20 }
 
 ];
 
