@@ -66,6 +66,30 @@ try {
   // ignore if column exists
 }
 
+// ✅ Migration: Thêm cột hasFollowedOA
+try {
+  db.prepare(`ALTER TABLE participants ADD COLUMN hasFollowedOA INTEGER DEFAULT 0`).run();
+  console.log("✅ Added hasFollowedOA column to participants table");
+} catch (e) {
+  // ignore if column exists
+}
+
+// ✅ Migration: Thêm cột followBonusUsed
+try {
+  db.prepare(`ALTER TABLE participants ADD COLUMN followBonusUsed INTEGER DEFAULT 0`).run();
+  console.log("✅ Added followBonusUsed column to participants table");
+} catch (e) {
+  // ignore if column exists
+}
+
+// ✅ Migration: Thêm cột freeSpinsRemaining
+try {
+  db.prepare(`ALTER TABLE participants ADD COLUMN freeSpinsRemaining INTEGER DEFAULT 1`).run();
+  console.log("✅ Added freeSpinsRemaining column to participants table");
+} catch (e) {
+  // ignore if column exists
+}
+
 // ================= PRIZE CONFIG =================
 const PRIZE_SLOTS = [
   { spinIndex: 0, prizeKey: "HAT", title: "Mũ Zocker", total: 50, weight: 30 },
@@ -153,21 +177,29 @@ app.post("/register", (req, res) => {
   if (existingPhone) {
     console.log(`⚠️  Phone ${phone} đã đăng ký trước đó`);
     
-    // ✅ THÊM: Check xem user đã quay chưa
+    // ✅ Check cooldown 24h cho lượt FREE
     if (existingPhone.lastSpinAt) {
       const timeSinceLastSpin = now() - existingPhone.lastSpinAt;
-      const timeRemaining = 86400000 - timeSinceLastSpin; // 24 giờ - thời gian đã qua
+      const timeRemaining = 86400000 - timeSinceLastSpin;
       
       if (timeRemaining > 0) {
-        // Vẫn còn trong thời gian chờ
-        const nextSpinTime = existingPhone.lastSpinAt + 86400000;
-        return res.json({ 
-          ok: false, 
-          participantId: existingPhone.id,
-          message: "Bạn đã quay hôm nay rồi!",
-          alreadyPlayed: true,
-          nextSpinTime: nextSpinTime
-        });
+        // ✅ Vẫn còn trong cooldown nhưng kiểm tra lượt bonus
+        const hasBonus = existingPhone.hasFollowedOA && !existingPhone.followBonusUsed;
+        
+        if (!hasBonus) {
+          // Hết cả 2 loại lượt
+          const nextSpinTime = existingPhone.lastSpinAt + 86400000;
+          return res.json({ 
+            ok: false, 
+            participantId: existingPhone.id,
+            message: "Bạn đã quay hôm nay rồi!",
+            alreadyPlayed: true,
+            nextSpinTime: nextSpinTime
+          });
+        }
+      } else {
+        // Đã qua 24h → reset lượt FREE
+        db.prepare(`UPDATE participants SET freeSpinsRemaining=1 WHERE id=?`).run(existingPhone.id);
       }
     }
     
@@ -178,30 +210,56 @@ app.post("/register", (req, res) => {
     });
   }
 
-  // ✅ CHECK 2: Kiểm tra Zalo User ID (CHỐNG GIAN LẬN)
+  // ✅ CHECK 2: Nếu có zaloUserId và đã tồn tại
   if (zaloUserId) {
-    const existingZalo = db.prepare("SELECT * FROM participants WHERE zaloUserId=?").get(zaloUserId);
+    const existingZalo = db
+      .prepare("SELECT * FROM participants WHERE zaloUserId=?")
+      .get(zaloUserId);
+
     if (existingZalo) {
-      console.log(`🚨 FRAUD DETECTED: Zalo ID ${zaloUserId} đã đăng ký với SĐT ${existingZalo.phone}`);
-      
-      // ✅ THÊM: Tính thời gian còn lại
-      let nextSpinTime = null;
+      // Update info mới nhất
+      db.prepare(`
+        UPDATE participants
+        SET name=?, phone=?, sex=?, job=?
+        WHERE id=?
+      `).run(
+        name || existingZalo.name,
+        phone || existingZalo.phone,
+        sex || existingZalo.sex,
+        job || existingZalo.job,
+        existingZalo.id
+      );
+
+      // ✅ Check cooldown 24h
       if (existingZalo.lastSpinAt) {
         const timeSinceLastSpin = now() - existingZalo.lastSpinAt;
-        if (timeSinceLastSpin < 86400000) {
-          nextSpinTime = existingZalo.lastSpinAt + 86400000;
+        const timeRemaining = 86400000 - timeSinceLastSpin;
+
+        if (timeRemaining > 0) {
+          const hasBonus = existingZalo.hasFollowedOA && !existingZalo.followBonusUsed;
+          
+          if (!hasBonus) {
+            return res.json({
+              ok: false,
+              participantId: existingZalo.id,
+              message: "Bạn đã quay hôm nay rồi!",
+              alreadyPlayed: true,
+              nextSpinTime: existingZalo.lastSpinAt + 86400000,
+            });
+          }
+        } else {
+          // Reset lượt FREE
+          db.prepare(`UPDATE participants SET freeSpinsRemaining=1 WHERE id=?`).run(existingZalo.id);
         }
       }
-      
-      return res.json({ 
-        ok: false, 
-        message: "Tài khoản Zalo của bạn đã tham gia chương trình.",
-        alreadyPlayed: true,
-        nextSpinTime: nextSpinTime
+
+      return res.json({
+        ok: true,
+        participantId: existingZalo.id,
+        message: "Tài khoản đã tham gia trước đó, tiếp tục chơi nhé.",
       });
     }
   } else {
-    // Nếu không có Zalo User ID, log cảnh báo (nhưng vẫn cho đăng ký)
     console.log(`⚠️  User đăng ký không có Zalo User ID (có thể dùng web browser)`);
   }
 
@@ -209,8 +267,8 @@ app.post("/register", (req, res) => {
   const id = nanoid(12);
   try {
     db.prepare(`
-      INSERT INTO participants(id, name, phone, sex, job, zaloUserId, createdAt)
-      VALUES(?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO participants(id, name, phone, sex, job, zaloUserId, createdAt, freeSpinsRemaining, hasFollowedOA, followBonusUsed)
+      VALUES(?, ?, ?, ?, ?, ?, ?, 1, 0, 0)
     `).run(id, name, phone, sex || "other", job || "other", zaloUserId || null, now());
 
     console.log(`✅ Đăng ký thành công: ${name} - ${phone} - Zalo: ${zaloUserId || 'N/A'}`);
@@ -227,15 +285,31 @@ app.post("/spin", (req, res) => {
   const p = db.prepare("SELECT * FROM participants WHERE id=?").get(participantId);
   if (!p) return res.json({ ok: false, message: "Không tìm thấy thông tin người chơi" });
 
-  // ✅ CHECK: Đã quay trong vòng 24 giờ chưa?
+  // ✅ LOGIC LƯỢT QUAY MỚI:
+  // 1. Kiểm tra lượt FREE (reset mỗi 24h)
+  // 2. Nếu hết lượt FREE, check lượt BONUS (follow OA, chỉ dùng 1 lần)
+
+  let spinType = "free"; // Mặc định là lượt FREE
+
+  // ✅ Check lượt FREE trước
   if (p.lastSpinAt && now() - p.lastSpinAt < 86400000) {
-    const nextSpinTime = new Date(p.lastSpinAt + 86400000);
-    const hours = Math.ceil((nextSpinTime.getTime() - now()) / 3600000);
-    return res.json({ 
-      ok: false, 
-      message: `Bạn đã quay hôm nay rồi! 🎰\n\nMỗi người chơi chỉ được quay 1 lần/ngày.\n\nHãy quay lại sau ${hours} giờ nữa để nhận cơ hội mới! 🎁`,
-      nextSpinTime: nextSpinTime.getTime()
-    });
+    // Đã quay trong vòng 24h → hết lượt FREE
+    
+    // ✅ Check lượt BONUS
+    if (p.hasFollowedOA && !p.followBonusUsed) {
+      spinType = "bonus";
+    } else {
+      const nextSpinTime = new Date(p.lastSpinAt + 86400000);
+      const hours = Math.ceil((nextSpinTime.getTime() - now()) / 3600000);
+      return res.json({ 
+        ok: false, 
+        message: `Bạn đã quay hôm nay rồi! 🎰\n\nMỗi người chơi chỉ được quay 1 lần/ngày.\n\nHãy quay lại sau ${hours} giờ nữa để nhận cơ hội mới! 🎁`,
+        nextSpinTime: nextSpinTime.getTime()
+      });
+    }
+  } else if (p.lastSpinAt) {
+    // Đã qua 24h → reset lượt FREE
+    db.prepare(`UPDATE participants SET freeSpinsRemaining=1 WHERE id=?`).run(participantId);
   }
 
   const tx = db.transaction(() => {
@@ -250,27 +324,111 @@ app.post("/spin", (req, res) => {
       if (!r.changes) throw "race";
     }
 
-    db.prepare(`
-      UPDATE participants SET lastSpinAt=?, lastPrizeId=?
-      WHERE id=?
-    `).run(now(), prize.id, participantId);
+    // ✅ Update theo loại lượt
+    if (spinType === "bonus") {
+      // Dùng lượt BONUS → đánh dấu đã sử dụng
+      db.prepare(`
+        UPDATE participants 
+        SET lastSpinAt=?, lastPrizeId=?, followBonusUsed=1, freeSpinsRemaining=0
+        WHERE id=?
+      `).run(now(), prize.id, participantId);
+    } else {
+      // Dùng lượt FREE
+      db.prepare(`
+        UPDATE participants 
+        SET lastSpinAt=?, lastPrizeId=?, freeSpinsRemaining=0
+        WHERE id=?
+      `).run(now(), prize.id, participantId);
+    }
 
     return prize;
   });
 
   try {
     const prize = tx();
-    console.log(`🎰 ${p.name} (${p.phone}) quay trúng: ${prize.title}`);
+    console.log(`🎰 ${p.name} (${p.phone}) quay [${spinType.toUpperCase()}] trúng: ${prize.title}`);
     res.json({
       ok: true,
       prizeKey: prize.prizeKey,
       title: prize.title,
       spinIndex: prize.spinIndex,
-      isWin: prize.prizeKey !== "LOSE"
+      isWin: prize.prizeKey !== "LOSE",
+      spinType: spinType,
+      remaining: prize.remaining
     });
   } catch {
     res.json({ ok: false, message: "Lỗi khi quay, vui lòng thử lại" });
   }
+});
+
+app.post("/follow-bonus", (req, res) => {
+  const { participantId } = req.body || {};
+  if (!participantId) return res.json({ ok: false, message: "Thiếu participantId" });
+
+  const p = db.prepare("SELECT * FROM participants WHERE id=?").get(participantId);
+  if (!p) return res.json({ ok: false, message: "Không tìm thấy thông tin người chơi" });
+
+  // ✅ Check đã follow chưa
+  if (p.hasFollowedOA) {
+    return res.json({ ok: false, message: "Bạn đã nhận lượt bonus rồi!" });
+  }
+
+  // ✅ Cấp lượt bonus (KHÔNG reset cooldown)
+  db.prepare(`
+    UPDATE participants
+    SET hasFollowedOA=1
+    WHERE id=?
+  `).run(participantId);
+
+  console.log(`🎁 ${p.name} (${p.phone}) đã follow OA → nhận lượt BONUS`);
+
+  return res.json({ 
+    ok: true, 
+    message: "Bạn đã nhận thêm 1 lượt quay! 🎉" 
+  });
+});
+
+app.get("/can-spin/:participantId", (req, res) => {
+  const participantId = req.params.participantId;
+
+  const p = db.prepare("SELECT * FROM participants WHERE id=?").get(participantId);
+  if (!p) {
+    return res.json({
+      ok: false,
+      canSpin: false,
+      message: "Không tìm thấy thông tin người chơi",
+    });
+  }
+
+  // ✅ Logic mới: Check cả lượt FREE và BONUS
+  
+  // Check lượt FREE (reset mỗi 24h)
+  if (!p.lastSpinAt || (now() - p.lastSpinAt >= 86400000)) {
+    return res.json({ 
+      ok: true, 
+      canSpin: true,
+      spinType: "free",
+      message: "Bạn có lượt quay miễn phí!"
+    });
+  }
+
+  // Hết lượt FREE → check lượt BONUS
+  if (p.hasFollowedOA && !p.followBonusUsed) {
+    return res.json({ 
+      ok: true, 
+      canSpin: true,
+      spinType: "bonus",
+      message: "Bạn có lượt quay từ follow OA!"
+    });
+  }
+
+  // Hết cả 2 loại lượt
+  return res.json({
+    ok: true,
+    canSpin: false,
+    nextSpinTime: p.lastSpinAt + 86400000,
+    message: "Bạn đã hết lượt quay hôm nay"
+  });
 });
 
 app.post("/claim", (req, res) => {
@@ -279,13 +437,16 @@ app.post("/claim", (req, res) => {
   if (!p || !p.lastPrizeId) return res.json({ ok: false, message: "Không có giải thưởng để nhận" });
 
   const prize = db.prepare("SELECT * FROM prize_pool WHERE id=?").get(p.lastPrizeId);
+  if (!prize) return res.json({ ok: false, message: "Không tìm thấy phần thưởng" });
   if (prize.prizeKey === "LOSE") return res.json({ ok: false, message: "Bạn chưa trúng giải" });
 
+  // ✅ Chỉ lấy claim chưa redeem của CHÍNH lần quay hiện tại (theo lastPrizeId)
   const old = db.prepare(`
     SELECT * FROM claims
-    WHERE participantId=? AND redeemedAt IS NULL
-  `).get(participantId);
-  if (old) return res.json({ ok: true, code: old.code });
+    WHERE participantId=? AND prizeId=? AND redeemedAt IS NULL
+  `).get(participantId, prize.id);
+
+  if (old) return res.json({ ok: true, code: old.code, title: old.title, prizeKey: old.prizeKey });
 
   const code = makeCode();
   db.prepare(`
@@ -294,9 +455,9 @@ app.post("/claim", (req, res) => {
   `).run(code, participantId, prize.id, prize.prizeKey, prize.title, now());
 
   console.log(`🎁 ${p.name} nhận mã quà: ${code} - ${prize.title}`);
-
-  res.json({ ok: true, code });
+  res.json({ ok: true, code, title: prize.title, prizeKey: prize.prizeKey });
 });
+
 
 // ================= WEBHOOK ZALO =================
 // VERIFY TOKEN bí mật - bạn tự đặt, nhớ ghi lại để dán vào Zalo dashboard
@@ -340,6 +501,43 @@ app.post('/zalo-webhook', (req, res) => {
 
   // Luôn trả 200 OK nhanh để Zalo không retry
   res.status(200).send('OK');
+});
+
+// ✅ API MỚI: Lấy thông tin lượt quay còn lại
+app.get("/spins-remaining/:participantId", (req, res) => {
+  const participantId = req.params.participantId;
+
+  const p = db.prepare("SELECT * FROM participants WHERE id=?").get(participantId);
+  if (!p) {
+    return res.json({
+      ok: false,
+      message: "Không tìm thấy thông tin người chơi",
+    });
+  }
+
+  // Tính lượt FREE
+  let freeSpins = 0;
+  if (!p.lastSpinAt || (now() - p.lastSpinAt >= 86400000)) {
+    freeSpins = 1;
+  }
+
+  // Tính lượt BONUS
+  let bonusSpins = 0;
+  if (p.hasFollowedOA && !p.followBonusUsed) {
+    bonusSpins = 1;
+  }
+
+  const totalSpins = freeSpins + bonusSpins;
+
+  return res.json({
+    ok: true,
+    totalSpins: totalSpins,
+    freeSpins: freeSpins,
+    bonusSpins: bonusSpins,
+    hasFollowedOA: !!p.hasFollowedOA,
+    followBonusUsed: !!p.followBonusUsed,
+    nextFreeSpinTime: p.lastSpinAt ? p.lastSpinAt + 86400000 : null
+  });
 });
 
 // ================= ADMIN UI =================
