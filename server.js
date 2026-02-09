@@ -540,6 +540,39 @@ app.get("/spins-remaining/:participantId", (req, res) => {
   });
 });
 
+// ✅ API: Lấy thông tin phần quà đã trúng
+app.get("/participant-prize/:participantId", (req, res) => {
+  const participantId = req.params.participantId;
+
+  const p = db.prepare("SELECT * FROM participants WHERE id=?").get(participantId);
+  if (!p) {
+    return res.json({
+      ok: false,
+      message: "Không tìm thấy thông tin người chơi",
+    });
+  }
+
+  if (!p.lastPrizeId) {
+    return res.json({
+      ok: true,
+      prize: null,
+      message: "Chưa có phần thưởng",
+    });
+  }
+
+  const prize = db.prepare("SELECT * FROM prize_pool WHERE id=?").get(p.lastPrizeId);
+  
+  return res.json({
+    ok: true,
+    prize: {
+      id: prize.id,
+      prizeKey: prize.prizeKey,
+      title: prize.title,
+      spinIndex: prize.spinIndex,
+    },
+  });
+});
+
 // ================= ADMIN UI =================
 app.get("/admin", (req, res) => {
   res.send(`
