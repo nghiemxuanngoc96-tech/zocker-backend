@@ -773,34 +773,32 @@ async function loadFraudDetection() {
 }
 
 function renderTable(data) {
-  const html = \`
-    <table>
-      <thead>
-        <tr>
-          <th>Tên</th>
-          <th>SĐT</th>
-          <th>Sản phẩm quan tâm</th>
-          <th>Thời gian đăng ký</th>
-          <th>Mã quà</th>
-          <th>Tên quà</th>
-          <th>Trạng thái</th>
-        </tr>
-      </thead>
-      <tbody>
-        \${data.map(r => \`
-          <tr>
-            <td>\${r.name || ''}</td>
-            <td>\${r.phone || ''}</td>
-            <td><span class="badge info">\${r.interest || 'N/A'}</span></td>
-            <td>\${new Date(r.createdAt).toLocaleString('vi-VN')}</td>
-            <td><strong>\${r.code || '-'}</strong></td>
-            <td>\${r.prizeTitle || '-'}</td>
-            <td>\${getStatusBadge(r)}</td>
-          </tr>
-        \`).join('')}
-      </tbody>
-    </table>
-  \`;
+  let rows = '';
+  data.forEach(function(r) {
+    rows += '<tr>';
+    rows += '<td>' + (r.name || '') + '</td>';
+    rows += '<td>' + (r.phone || '') + '</td>';
+    rows += '<td><span class="badge info">' + (r.interest || 'N/A') + '</span></td>';
+    rows += '<td>' + new Date(r.displayTime).toLocaleString('vi-VN') + '</td>';
+    rows += '<td><strong>' + (r.code || '-') + '</strong></td>';
+    rows += '<td>' + (r.prizeTitle || '-') + '</td>';
+    rows += '<td>' + getStatusBadge(r) + '</td>';
+    rows += '</tr>';
+  });
+
+  const html = '<table>'
+    + '<thead><tr>'
+    + '<th>Tên</th>'
+    + '<th>SĐT</th>'
+    + '<th>Sản phẩm quan tâm</th>'
+    + '<th>Thời gian nhận mã</th>'
+    + '<th>Mã quà</th>'
+    + '<th>Tên quà</th>'
+    + '<th>Trạng thái</th>'
+    + '</tr></thead>'
+    + '<tbody>' + rows + '</tbody>'
+    + '</table>';
+
   document.getElementById('playerTable').innerHTML = html;
 }
 
@@ -956,7 +954,7 @@ app.get("/admin/api/players", adminAuth, (req, res) => {
       c.redeemedBy
     FROM participants p
     LEFT JOIN claims c ON p.id = c.participantId
-    ORDER BY p.createdAt DESC
+    ORDER BY c.createdAt DESC, p.createdAt DESC
   `).all();
   
   const result = rows.map(r => ({
@@ -969,6 +967,8 @@ app.get("/admin/api/players", adminAuth, (req, res) => {
     zaloUserId: r.zaloUserId,
     createdAt: r.createdAt,
     lastSpinAt: r.lastSpinAt,
+    // ✅ Dùng thời gian nhận mã (claimCreatedAt) nếu có, fallback về createdAt
+    displayTime: r.claimCreatedAt || r.createdAt,
     code: r.code,
     prizeTitle: r.prizeTitle,
     prizeKey: r.prizeKey,
@@ -1096,7 +1096,7 @@ app.get("/admin/api/export", adminAuth, (req, res) => {
     rows = rows.filter(r => r.job && r.job.toLowerCase() === interest.toLowerCase());
   }
   
-  let csv = "Tên,SĐT,Giới tính,Sản phẩm quan tâm,Zalo User ID,Thời gian đăng ký,Mã quà,Tên quà,Trạng thái\n";
+  let csv = "Tên,SĐT,Giới tính,Sản phẩm quan tâm,Zalo User ID,Thời gian nhận mã,Mã quà,Tên quà,Trạng thái\n";
   
   for (const r of rows) {
     const statusText = !r.code ? "Chưa có quà" : (r.redeemedAt ? "Đã nhận quà" : "Chưa nhận quà");
@@ -1105,7 +1105,9 @@ app.get("/admin/api/export", adminAuth, (req, res) => {
     const sexText = sexMap[r.sex] || r.sex || '';
     const zaloId = r.zaloUserId ? r.zaloUserId.substring(0, 20) : 'N/A';
     
-    csv += `"${r.name || ''}","${r.phone || ''}","${sexText}","${interestName}","${zaloId}","${new Date(r.createdAt).toLocaleString('vi-VN')}","${r.code || ''}","${r.prizeTitle || ''}","${statusText}"\n`;
+    // ✅ Dùng thời gian nhận mã nếu có, fallback về thời gian đăng ký
+const displayTime = r.redeemedAt || r.createdAt;
+csv += `"${r.name || ''}","${r.phone || ''}","${sexText}","${interestName}","${zaloId}","${new Date(displayTime).toLocaleString('vi-VN')}","${r.code || ''}","${r.prizeTitle || ''}","${statusText}"\n`;
   }
   
   const filename = `zocker_khachhang_${new Date().toISOString().split('T')[0]}.csv`;
